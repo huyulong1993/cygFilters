@@ -1,0 +1,117 @@
+"""爬虫线程：先拉列表，再并发抓角色详情。"""
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional
+
+from PySide6.QtCore import QThread, Signal
+
+from . import config
+from .api import CygApi
+from .db import Db
+from .parser import parse_detail
+
+
+class CrawlWorker(QThread):
+    stage = Signal(str)              # 阶段说明
+    progress = Signal(int, int)      # 已完成, 总数
+    log = Signal(str)                # 日志
+    done = Signal(int)               # 抓取到的角色总数
+    failed = Signal(str)
+
+    def __init__(self, api: CygApi, db: Db,
+                 server_ids: Optional[List[str]] = None,
+                 job: Optional[int] = None,
+                 fetch_details: bool = True,
+                 force_detail: bool = False,
+                 concurrency: int = config.DETAIL_CONCURRENCY,
+                 parent=None):
+        super().__init__(parent)
+        self.api = api
+        self.db = db
+        self.server_ids = server_ids
+        self.job = job
+        self.fetch_details = fetch_details
+        self.force_detail = force_detail
+        self.concurrency = concurrency
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            self.stage.emit("拉取角色列表…")
+            self._crawl_list()
+            if self._cancel:
+                self.done.emit(0)
+                return
+            if self.fetch_details:
+                self.stage.emit("抓取角色详情…")
+                self._crawl_details()
+            if self._cancel:
+                self.done.emit(0)
+            else:
+                self.done.emit(self.db.count_roles(self.server_ids))
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(f"{e}\n{traceback.format_exc()}")
+
+    # ---------- 列表 ----------
+    def _crawl_list(self):
+        scopes = self.server_ids if self.server_ids else [None]
+        for sid in scopes:
+            if self._cancel:
+                return
+            label = "全部区服" if sid is None else f"区服 {sid}"
+            page = 1
+            while True:
+                if self._cancel:
+                    return
+                resp = self.api.fetch_list_page(page=page, server_id=sid, job=self.job)
+                data = resp.get("data") or {}
+                goods = [it["goods"] for it in (data.get("list") or []) if it.get("goods")]
+                if goods:
+                    self.db.upsert_roles(goods)
+                total_page = data.get("totalPage") or 0
+                self.log.emit(f"{label} 第 {page}/{total_page} 页，新增 {len(goods)} 条")
+                self.progress.emit(page, total_page)
+                if page >= total_page:
+                    break
+                page += 1
+
+    # ---------- 详情 ----------
+    def _crawl_details(self):
+        scope = self.server_ids or None
+        if self.force_detail:
+            self.db.reset_details(scope)
+        pending = self.db.pending_details(scope)
+        total = len(pending)
+        if total == 0:
+            self.log.emit("详情已是最新，无需抓取")
+            self.progress.emit(0, 0)
+            return
+        self.log.emit(f"待抓详情 {total} 条，并发 {self.concurrency}")
+        self.progress.emit(0, total)
+        done = 0
+        with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
+            futures = {ex.submit(self._fetch_one, code): code for code in pending}
+            for fut in as_completed(futures):
+                if self._cancel:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    break
+                code = futures[fut]
+                done += 1
+                try:
+                    fut.result()
+                except Exception as e:  # noqa: BLE001
+                    self.log.emit(f"详情失败 {code}: {e}")
+                if done % 5 == 0 or done == total:
+                    self.progress.emit(done, total)
+        self.progress.emit(done, total)
+
+    def _fetch_one(self, goods_code: str):
+        html = self.api.fetch_detail_html(goods_code)
+        attrs = parse_detail(html)
+        if attrs:
+            self.db.save_attrs(goods_code, attrs)
+        else:
+            self.db.save_attrs(goods_code, {})

@@ -1,0 +1,39 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+
+# ---------- PyInstaller 打包产物 ----------
+# 说明：根目录的 *.spec 是打包配置，需保留，不在此忽略
+build/
+dist/
+
+# ---------- 运行期本地数据 ----------
+# 本地数据库、图片缓存、抓取结果等
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# ---------- 编辑器 / IDE ----------
+.idea/
+.vscode/
+*.swp
+
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
