@@ -1,9 +1,9 @@
 """左侧筛选面板。"""
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDoubleValidator, QFontMetrics
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QGridLayout,
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                               QRadioButton, QSpinBox, QVBoxLayout, QWidget)
 
 from .. import config
 from ..filters import FilterState
@@ -58,6 +58,39 @@ class _RangeCell(QWidget):
         return _parse(self.lo.text()), _parse(self.hi.text())
 
 
+class _EquipRow(QWidget):
+    """装备筛选项：复选 + 「至少 N 件」数量。"""
+
+    def __init__(self, tag: str, max_count: int, on_change):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.check = QCheckBox(tag)
+        self.check.stateChanged.connect(on_change)
+        self.check.stateChanged.connect(self._sync)
+        self.spin = QSpinBox()
+        self.spin.setRange(1, max_count)
+        self.spin.setValue(1)
+        self.spin.setMinimumWidth(64)
+        self.spin.setFixedWidth(64)
+        self.spin.setEnabled(False)
+        self.spin.setToolTip("至少 N 件")
+        self.spin.valueChanged.connect(on_change)
+        lay.addWidget(self.check)
+        lay.addWidget(self.spin)
+        lay.addStretch(1)
+
+    def _sync(self, *args):
+        self.spin.setEnabled(self.check.isChecked())
+
+    def is_checked(self) -> bool:
+        return self.check.isChecked()
+
+    def count(self) -> int:
+        return self.spin.value()
+
+
 class FilterPanel(QWidget):
     changed = Signal()
 
@@ -67,6 +100,7 @@ class FilterPanel(QWidget):
         self._ordered_cells = []    # [(name, cell)] 保持展示顺序
         self._job_checks = {}
         self._server_checks = {}
+        self._equip_rows = {}
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(300)
@@ -114,6 +148,33 @@ class FilterPanel(QWidget):
         self.server_grid = QGridLayout(self.gb_server)
         self.server_grid.setVerticalSpacing(4)
         root.addWidget(self.gb_server)
+
+        # 装备（至尊 / 神佑，可设「至少 N 件」）
+        gb_equip = QGroupBox("装备（至少 N 件）")
+        equip_v = QVBoxLayout(gb_equip)
+
+        mode_row = QHBoxLayout()
+        self.equip_all = QRadioButton("全部满足")
+        self.equip_any = QRadioButton("满足一项即可")
+        self.equip_all.setChecked(True)
+        mode_group = QButtonGroup(self)
+        mode_group.addButton(self.equip_all)
+        mode_group.addButton(self.equip_any)
+        self.equip_all.toggled.connect(self._tick)
+        mode_row.addWidget(self.equip_all)
+        mode_row.addWidget(self.equip_any)
+        mode_row.addStretch(1)
+        equip_v.addLayout(mode_row)
+
+        equip_box = QWidget()
+        equip_grid = QGridLayout(equip_box)
+        equip_grid.setContentsMargins(0, 0, 0, 0)
+        for i, tag in enumerate(config.EQUIP_TAGS):
+            row = _EquipRow(tag, config.EQUIP_MAX_COUNT, self._tick)
+            self._equip_rows[tag] = row
+            equip_grid.addWidget(row, i, 0)
+        equip_v.addWidget(equip_box)
+        root.addWidget(gb_equip)
 
         # 角色属性（搜索 + 分栏）
         self.gb_attr = QGroupBox("角色属性（数值区间）")
@@ -241,6 +302,9 @@ class FilterPanel(QWidget):
         st.price_max = _parse(self.price_hi.text())
         st.jobs = {n for n, cb in self._job_checks.items() if cb.isChecked()}
         st.servers = {sid for sid, cb in self._server_checks.items() if cb.isChecked()}
+        st.equip_rules = {tag: row.count() for tag, row in self._equip_rows.items()
+                          if row.is_checked()}
+        st.equip_match_all = self.equip_all.isChecked()
         for name, cell in self._attr_cells.items():
             lo, hi = cell.value()
             if lo is not None or hi is not None:

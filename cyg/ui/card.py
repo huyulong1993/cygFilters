@@ -119,10 +119,10 @@ class CardWidget(QFrame):
             parts.append(area)
         elif role.get("server_id"):
             parts.append(f"区服 {role['server_id']}")
-        if role.get("job"):
-            parts.append(role["job"])
         if role.get("title"):
             parts.append(role["title"])
+        elif role.get("job"):
+            parts.append(role["job"])
         return " · ".join(parts)
 
     # ---------- 属性网格 ----------

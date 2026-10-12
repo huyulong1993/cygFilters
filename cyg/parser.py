@@ -1,11 +1,17 @@
 """解析角色详情 HTML，抽取属性键值。"""
 import re
 from html.parser import HTMLParser
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from . import config
 
 _NUM_RE = re.compile(r"-?\d[\d,，]*\.?\d*")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+# 装备条：data-info="{name: '...', ..., type: '..', ...}"
+_INFO_RE = re.compile(r'data-info="\{(.*?)\}"', re.S)
+_NAME_RE = re.compile(r"name:\s*'([^']*)'")
+_TYPE_RE = re.compile(r"\btype:\s*'([^']*)'")
 
 
 def _strip_tags(s: str) -> str:
@@ -24,14 +30,20 @@ def _norm_val(val: str) -> str:
 
 
 def to_number(value) -> Optional[float]:
-    """从 '133,731' / 'LV6' / '75%' / '6级' 中抽取第一个数值。"""
+    """抽取数值。
+
+    形如 '133,731' / 'LV6' / '75%' / '6级' 取第一个数值；
+    形如 '1000/20000'（当前/最大）取「/」后的最大值。
+    """
     if value is None:
         return None
-    m = _NUM_RE.search(str(value).replace(" ", ""))
-    if not m:
+    s = str(value).replace(" ", "")
+    nums = _NUM_RE.findall(s)
+    if not nums:
         return None
+    raw = nums[-1] if "/" in s else nums[0]
     try:
-        return float(m.group().replace(",", "").replace("，", ""))
+        return float(raw.replace(",", "").replace("，", ""))
     except ValueError:
         return None
 
@@ -110,3 +122,42 @@ def parse_detail(html: str) -> dict:
                 continue
             i += 1
     return attrs
+
+
+def _equipment_section(html: str) -> str:
+    """截取「装备」页签内容（到下一个页签为止）。"""
+    i = html.find(">装备</h4>")
+    if i == -1:
+        return ""
+    j = html.find('<div class="m-intro-content', i)
+    return html[i: j if j != -1 else len(html)]
+
+
+def parse_equipment(html: str) -> Dict[str, int]:
+    """解析角色装备，返回 {装备标签: 件数}（如 {'至尊武器': 1, '神佑防具': 3}）。
+
+    仅统计 武器 / 项链 / 戒指 / 防具(头·衣服·护腕·鞋·腰带) 中，
+    名字含「至尊」或「神佑」的装备件数。
+    """
+    section = _equipment_section(html)
+    if not section:
+        return {}
+    counts: Dict[str, int] = {}
+    for m in _INFO_RE.finditer(section):
+        body = m.group(1)
+        nm = _NAME_RE.search(body)
+        tp = _TYPE_RE.search(body)
+        if not nm or not tp:
+            continue
+        name = nm.group(1)
+        group = config.EQUIP_SLOT_TYPES.get(tp.group(1))
+        if not group:
+            continue
+        if "至尊" in name:
+            tag = "至尊" + group
+        elif "神佑" in name:
+            tag = "神佑" + group
+        else:
+            continue
+        counts[tag] = counts.get(tag, 0) + 1
+    return counts

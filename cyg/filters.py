@@ -10,6 +10,8 @@ class FilterState:
     price_max: Optional[float] = None
     jobs: set = field(default_factory=set)          # 空 = 不限
     servers: set = field(default_factory=set)       # server_id 集合，空 = 不限
+    equip_rules: dict = field(default_factory=dict)  # {装备标签: 至少件数}
+    equip_match_all: bool = True                     # True=全部满足，False=满足一项即可
     ranges: Dict[str, Tuple[Optional[float], Optional[float]]] = field(default_factory=dict)
     sort_key: str = "price"                         # role 字段或属性名
     sort_desc: bool = False
@@ -40,6 +42,13 @@ def apply_filter(roles: List[dict], state: FilterState) -> List[dict]:
             continue
         if state.servers and str(r.get("server_id") or "") not in state.servers:
             continue
+        if state.equip_rules:
+            counts = r.get("equip_counts") or {}
+            hits = [counts.get(tag, 0) >= n
+                    for tag, n in state.equip_rules.items()]
+            matched = all(hits) if state.equip_match_all else any(hits)
+            if not matched:
+                continue
         ok = True
         for name, (lo, hi) in state.ranges.items():
             if lo is None and hi is None:

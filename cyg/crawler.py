@@ -8,7 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from . import config
 from .api import CygApi
 from .db import Db
-from .parser import parse_detail
+from .parser import parse_detail, parse_equipment
 
 
 class CrawlWorker(QThread):
@@ -34,6 +34,7 @@ class CrawlWorker(QThread):
         self.force_detail = force_detail
         self.concurrency = concurrency
         self._cancel = False
+        self._fetched = set()   # 本轮列表抓到的 goodsCode
 
     def cancel(self):
         self._cancel = True
@@ -45,6 +46,7 @@ class CrawlWorker(QThread):
             if self._cancel:
                 self.done.emit(0)
                 return
+            self._cleanup_stale()
             if self.fetch_details:
                 self.stage.emit("抓取角色详情…")
                 self._crawl_details()
@@ -54,6 +56,18 @@ class CrawlWorker(QThread):
                 self.done.emit(self.db.count_roles(self.server_ids))
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"{e}\n{traceback.format_exc()}")
+
+    def _cleanup_stale(self):
+        """删除范围内已下架/已售的角色（已不在当前列表中）。"""
+        if not self._fetched:
+            return
+        job_name = config.JOB_NAMES.get(self.job) if self.job is not None else None
+        try:
+            removed = self.db.prune_roles(self.server_ids, job_name, self._fetched)
+            if removed:
+                self.log.emit(f"清理已下架/已售角色 {removed} 条")
+        except Exception as e:  # noqa: BLE001
+            self.log.emit(f"清理旧数据失败：{e}")
 
     # ---------- 列表 ----------
     def _crawl_list(self):
@@ -71,6 +85,7 @@ class CrawlWorker(QThread):
                 goods = [it["goods"] for it in (data.get("list") or []) if it.get("goods")]
                 if goods:
                     self.db.upsert_roles(goods)
+                    self._fetched.update(str(g.get("goodsCode")) for g in goods)
                 total_page = data.get("totalPage") or 0
                 self.log.emit(f"{label} 第 {page}/{total_page} 页，新增 {len(goods)} 条")
                 self.progress.emit(page, total_page)
@@ -111,7 +126,5 @@ class CrawlWorker(QThread):
     def _fetch_one(self, goods_code: str):
         html = self.api.fetch_detail_html(goods_code)
         attrs = parse_detail(html)
-        if attrs:
-            self.db.save_attrs(goods_code, attrs)
-        else:
-            self.db.save_attrs(goods_code, {})
+        tags = parse_equipment(html)
+        self.db.save_attrs(goods_code, attrs, tags)

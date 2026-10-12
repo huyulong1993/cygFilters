@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS roles (
     listed_time  TEXT,
     offline_time TEXT,
     detail_ok    INTEGER DEFAULT 0,
+    equip_tags   TEXT DEFAULT '',
     updated_at   TEXT
 );
 CREATE TABLE IF NOT EXISTS attrs (
@@ -41,6 +42,10 @@ class Db:
         self.conn.row_factory = sqlite3.Row
         with self._lock:
             self.conn.executescript(_SCHEMA)
+            cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(roles)")]
+            if "equip_tags" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE roles ADD COLUMN equip_tags TEXT DEFAULT ''")
             self.conn.commit()
 
     # ---------- 写入 ----------
@@ -78,8 +83,10 @@ class Db:
             )
             self.conn.commit()
 
-    def save_attrs(self, goods_code: str, attrs: Dict[str, str]) -> None:
+    def save_attrs(self, goods_code: str, attrs: Dict[str, str],
+                   equip_counts: Optional[Dict[str, int]] = None) -> None:
         rows = [(goods_code, k, to_number(v), str(v)) for k, v in attrs.items()]
+        tags = ",".join(f"{k}:{v}" for k, v in (equip_counts or {}).items())
         with self._lock:
             self.conn.execute("DELETE FROM attrs WHERE goods_code=?", (goods_code,))
             self.conn.executemany(
@@ -87,8 +94,9 @@ class Db:
                 rows,
             )
             self.conn.execute(
-                "UPDATE roles SET detail_ok=1, updated_at=datetime('now','localtime') "
-                "WHERE goods_code=?", (goods_code,),
+                "UPDATE roles SET detail_ok=1, equip_tags=?, "
+                "updated_at=datetime('now','localtime') WHERE goods_code=?",
+                (tags, goods_code),
             )
             self.conn.commit()
 
@@ -163,4 +171,43 @@ class Db:
                 "num": a["num"], "raw": a["raw"]}
         for role in roles:
             role["attrs"] = by_code.get(role["goods_code"], {})
+            counts: Dict[str, int] = {}
+            for part in (role.get("equip_tags") or "").split(","):
+                if not part:
+                    continue
+                tag, _, n = part.partition(":")
+                counts[tag] = int(n) if n.isdigit() else 1
+            role["equip_counts"] = counts
         return roles
+
+    def prune_roles(self, server_ids: Optional[List[str]] = None,
+                    job_name: Optional[str] = None,
+                    keep_codes=()) -> int:
+        """删除范围内、已不在列表中的角色（已下架/已售），并清理其属性。
+
+        仅在抓到非空列表后调用，避免误删。
+        """
+        keep = [str(c) for c in keep_codes]
+        if not keep:
+            return 0
+        with self._lock:
+            self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS _keep(code TEXT PRIMARY KEY)")
+            self.conn.execute("DELETE FROM _keep")
+            self.conn.executemany("INSERT OR IGNORE INTO _keep(code) VALUES (?)",
+                                  [(c,) for c in keep])
+            where, params = [], []
+            if server_ids:
+                where.append("server_id IN (%s)" % ",".join("?" * len(server_ids)))
+                params += list(server_ids)
+            if job_name:
+                where.append("job=?")
+                params.append(job_name)
+            cond = (" AND " + " AND ".join(where)) if where else ""
+            cur = self.conn.execute(
+                "DELETE FROM roles WHERE goods_code NOT IN (SELECT code FROM _keep)" + cond,
+                params)
+            deleted = cur.rowcount
+            self.conn.execute(
+                "DELETE FROM attrs WHERE goods_code NOT IN (SELECT goods_code FROM roles)")
+            self.conn.commit()
+            return deleted
