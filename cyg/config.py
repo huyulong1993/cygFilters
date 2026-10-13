@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-APP_NAME = "畅易阁角色筛选器-v0.0.2"
+APP_NAME = "畅易阁角色筛选器-v0.0.3"
 
 # 目标游戏：新水浒Q传
 GAME_ID = 16

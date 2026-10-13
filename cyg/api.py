@@ -34,16 +34,22 @@ class CygApi:
         page_size: int = config.LIST_PAGE_SIZE,
         server_id: Optional[str] = None,
         job: Optional[int] = None,
+        status: Optional[int] = None,
         game_id: int = config.GAME_ID,
         goods_type: int = config.GOODS_TYPE,
         sort: Optional[dict] = None,
     ) -> dict:
-        """拉取一页角色列表，返回完整响应 dict。"""
+        """拉取一页角色列表，返回完整响应 dict。
+
+        status: 1=公示中，2=待售；None=不限定（服务端默认返回两者）。
+        """
         filter_list = [
             {"field": "gameId", "value": str(game_id), "type": 1},
             {"field": "goodsType", "value": str(goods_type), "type": 1},
         ]
         game_server = {"gameId": str(game_id)}
+        if status is not None:
+            filter_list.append({"field": "status", "value": str(status), "type": 1})
         if server_id:
             filter_list.append({"field": "serverId", "value": str(server_id)})
             game_server["serverId"] = str(server_id)
@@ -71,13 +77,15 @@ class CygApi:
         self,
         server_id: Optional[str] = None,
         job: Optional[int] = None,
+        status: Optional[int] = None,
         page_size: int = config.LIST_PAGE_SIZE,
     ) -> Iterator[dict]:
         """分页迭代某个 serverId（或全区）下的全部角色 goods。"""
         page = 1
         while True:
             resp = self.fetch_list_page(page=page, page_size=page_size,
-                                        server_id=server_id, job=job)
+                                        server_id=server_id, job=job,
+                                        status=status)
             data = resp.get("data") or {}
             for item in data.get("list") or []:
                 goods = item.get("goods")

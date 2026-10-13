@@ -92,6 +92,15 @@ class CardWidget(QFrame):
         top.addWidget(self.name)
         top.addStretch(1)
 
+        ws = role.get("web_status")
+        if ws in (1, 2):
+            tag = QLabel("公示中" if ws == 1 else "在售")
+            tag.setStyleSheet(
+                "font-size:11px;padding:1px 6px;border-radius:4px;"
+                + ("background:#fff1e6;color:#c26a00;" if ws == 1
+                   else "background:#eef1f5;color:#5a6270;"))
+            top.addWidget(tag)
+
         price = role.get("price")
         self.price = QLabel(f"¥{_fmt_num(price)}" if price is not None else "价格未知")
         self.price.setObjectName("price")

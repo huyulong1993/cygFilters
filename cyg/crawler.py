@@ -1,4 +1,5 @@
 """爬虫线程：先拉列表，再并发抓角色详情。"""
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
@@ -35,6 +36,7 @@ class CrawlWorker(QThread):
         self.concurrency = concurrency
         self._cancel = False
         self._fetched = set()   # 本轮列表抓到的 goodsCode
+        self._list_incomplete = False  # 列表分页是否出现过失败
 
     def cancel(self):
         self._cancel = True
@@ -59,6 +61,9 @@ class CrawlWorker(QThread):
 
     def _cleanup_stale(self):
         """删除范围内已下架/已售的角色（已不在当前列表中）。"""
+        if self._list_incomplete:
+            self.log.emit("列表抓取不完整，跳过旧数据清理")
+            return
         if not self._fetched:
             return
         job_name = config.JOB_NAMES.get(self.job) if self.job is not None else None
@@ -73,25 +78,45 @@ class CrawlWorker(QThread):
     def _crawl_list(self):
         scopes = self.server_ids if self.server_ids else [None]
         for sid in scopes:
-            if self._cancel:
-                return
-            label = "全部区服" if sid is None else f"区服 {sid}"
-            page = 1
-            while True:
+            for status in (2, 1):  # 待售 + 公示中
                 if self._cancel:
                     return
-                resp = self.api.fetch_list_page(page=page, server_id=sid, job=self.job)
-                data = resp.get("data") or {}
-                goods = [it["goods"] for it in (data.get("list") or []) if it.get("goods")]
-                if goods:
-                    self.db.upsert_roles(goods)
-                    self._fetched.update(str(g.get("goodsCode")) for g in goods)
-                total_page = data.get("totalPage") or 0
-                self.log.emit(f"{label} 第 {page}/{total_page} 页，新增 {len(goods)} 条")
-                self.progress.emit(page, total_page)
-                if page >= total_page:
-                    break
-                page += 1
+                label = "全部区服" if sid is None else f"区服 {sid}"
+                label += "·在售" if status == 2 else "·公示"
+                page = 1
+                while True:
+                    if self._cancel:
+                        return
+                    resp = self._fetch_page_retry(page, sid, status)
+                    if resp is None:
+                        self._list_incomplete = True
+                        self.log.emit(f"{label} 第 {page} 页多次失败，跳过该分组")
+                        break
+                    data = resp.get("data") or {}
+                    goods = [it["goods"] for it in (data.get("list") or [])
+                             if it.get("goods")]
+                    if goods:
+                        self.db.upsert_roles(goods)
+                        self._fetched.update(str(g.get("goodsCode")) for g in goods)
+                    total_page = data.get("totalPage") or 0
+                    self.log.emit(f"{label} 第 {page}/{total_page} 页，新增 {len(goods)} 条")
+                    self.progress.emit(page, total_page)
+                    if page >= total_page:
+                        break
+                    page += 1
+
+    def _fetch_page_retry(self, page, sid, status, attempts: int = 3):
+        """列表分页请求；失败重试，避免单页偶发失败丢掉后面（含公示）的数据。"""
+        for i in range(attempts):
+            if self._cancel:
+                return None
+            try:
+                return self.api.fetch_list_page(page=page, server_id=sid,
+                                                job=self.job, status=status)
+            except Exception as e:  # noqa: BLE001
+                self.log.emit(f"列表请求失败(第{page}页 {i + 1}/{attempts}): {e}")
+                time.sleep(1.0 * (i + 1))
+        return None
 
     # ---------- 详情 ----------
     def _crawl_details(self):
